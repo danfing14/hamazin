@@ -179,6 +179,16 @@
         <option value="4">4 שעות</option>
       </select>
     </label>
+    <label>שמירה מקסימלית
+      <select id="maxH">
+        <option value="3">3 שעות</option>
+        <option value="4">4 שעות</option>
+        <option value="6">6 שעות</option>
+        <option value="8">8 שעות</option>
+        <option value="12">12 שעות</option>
+        <option value="0">ללא הגבלה</option>
+      </select>
+    </label>
     <label>חלוקה
       <select id="mode">
         <option value="round">שעות עגולות ושוות</option>
@@ -260,32 +270,38 @@ function totalMinutes(start, end, endDay) {
 function dayLabel(idx) {
   return idx === 0 ? 'היום' : idx === 1 ? 'מחר' : idx === 2 ? 'מחרתיים' : 'בעוד ' + idx + ' ימים';
 }
-// EVERY guard who stands a shift stands the SAME length of time. Two ways to split (the "mode"):
+// EVERY guard who stands a shift stands the SAME length of time, and (when a maximum is set) no shift is longer than it.
+// Two ways to split (the "mode"):
 //  "round" (default): equal shifts in whole hours. Uses the largest number of guards (<= everyone) that divides the hours
-//          evenly with each shift >= the minimum. If no such split exists for 2+ guards, it falls back to "exact".
-//  "exact": equal to the minute for everyone (a leftover minute or two may go to the first guards), at least the minimum each.
+//          evenly with each shift between the minimum and the maximum. If no such split exists for 2+ guards, it falls back to "exact".
+//  "exact": equal to the minute for everyone (a leftover minute or two may go to the first guards).
 // Guards beyond the number that fits sit out this round (they are the last ones in the order).
-function equalPlan(n, total, minH, mode) {
-  const none = { k: 0, base: 0, rem: 0, leftover: 0, exact: false, fellBack: false };
+// maxH = 0/undefined means no limit. If even everyone standing would exceed the maximum, everyone stands (equal) and overMax is set.
+function equalPlan(n, total, minH, mode, maxH) {
+  const none = { k: 0, base: 0, rem: 0, leftover: 0, exact: false, fellBack: false, overMax: false };
   if (!n || total === null || total <= 0) return none;
-  const m = Math.max(1, minH || 1);
+  const m = Math.max(1, minH || 1), M = maxH > 0 ? Math.max(maxH, m) : 0;
   const exact = () => {
-    const k = Math.max(1, Math.min(n, Math.floor(total / (m * 60))));
-    return { k: k, base: Math.floor(total / k), rem: total % k, leftover: 0, exact: true, fellBack: false };
+    const kMax = Math.max(1, Math.min(n, Math.floor(total / (m * 60))));
+    const need = M ? Math.ceil(total / (M * 60)) : 1;
+    return { k: kMax, base: Math.floor(total / kMax), rem: total % kMax, leftover: 0, exact: true, fellBack: false, overMax: need > kMax };
   };
   if (mode === 'exact') return exact();
   const hours = Math.floor(total / 60), leftover = total % 60;
   let k = 0;
-  for (let c = Math.min(n, Math.floor(hours / m)); c >= 1; c--) if (hours % c === 0) { k = c; break; }
+  for (let c = Math.min(n, Math.floor(hours / m)); c >= 1; c--) {
+    if (hours % c === 0 && (!M || hours / c <= M)) { k = c; break; }
+  }
   if (k < 2 && n > 1) { const e = exact(); e.fellBack = true; return e; }
   if (hours === 0) return exact();
   if (k === 0) k = 1;
-  return { k: k, base: (hours / k) * 60, rem: 0, leftover: leftover, exact: false, fellBack: false };
+  const base = (hours / k) * 60;
+  return { k: k, base: base, rem: 0, leftover: leftover, exact: false, fellBack: false, overMax: !!(M && base > M * 60) };
 }
-function buildSlots(order, start, end, minH, endDay, mode) {
+function buildSlots(order, start, end, minH, endDay, mode, maxH) {
   const total = totalMinutes(start, end, endDay), s = toMin(start);
   if (total === null || !order.length) return [];
-  const p = equalPlan(order.length, total, minH, mode);
+  const p = equalPlan(order.length, total, minH, mode, maxH);
   let cur = s;
   return order.map((name, i) => {
     const dur = i < p.k ? p.base + (i < p.rem ? 1 : 0) : 0;
@@ -295,13 +311,14 @@ function buildSlots(order, start, end, minH, endDay, mode) {
   });
 }
 // End times that would let ALL n guards stand equal whole-hour shifts (each >= the minimum): the closest one below and above.
-function suggestEnds(n, total, minH, start) {
+function suggestEnds(n, total, minH, start, maxH) {
   const s = toMin(start);
   if (!n || total === null || s === null) return [];
   const m = Math.max(1, minH || 1), hrs = total / 60, ds = new Set();
   const lo = Math.floor(hrs / n), hi = Math.ceil(hrs / n);
-  if (lo >= m) ds.add(lo);
-  ds.add(Math.max(hi, m));
+  const M = maxH > 0 ? Math.max(maxH, m) : 0;
+  if (lo >= m) ds.add(M ? Math.min(lo, M) : lo);
+  ds.add(M ? Math.min(Math.max(hi, m), M) : Math.max(hi, m));
   const out = [];
   for (const d of [...ds].sort((a, b) => a - b)) {
     const T = d * n * 60;
@@ -335,7 +352,7 @@ function parseNames(text) {
   return text.split(/[\n,،]+/).map((s) => s.trim().replace(/\s+/g, ' ')).filter(Boolean).map((s) => s.slice(0, 40));
 }
 function sanitizeState(raw) {
-  const out = { guards: [], order: [], start: '22:00', end: '06:00', minHours: 2, endDay: 0, mode: 'round', theme: null };
+  const out = { guards: [], order: [], start: '22:00', end: '06:00', minHours: 2, maxHours: 6, endDay: 0, mode: 'round', theme: null };
   if (!raw || typeof raw !== 'object') return out;
   if (Array.isArray(raw.guards)) {
     for (const g of raw.guards) if (typeof g === 'string' && g.trim() && !out.guards.includes(g.trim().slice(0, 40)) && out.guards.length < 100) out.guards.push(g.trim().slice(0, 40));
@@ -345,13 +362,14 @@ function sanitizeState(raw) {
   if (Array.isArray(raw.order) && raw.order.length === out.guards.length && out.guards.every((g) => raw.order.includes(g)) && new Set(raw.order).size === raw.order.length) out.order = raw.order.slice();
   if (Number.isInteger(raw.minHours) && raw.minHours >= 1 && raw.minHours <= 6) out.minHours = raw.minHours;
   if (Number.isInteger(raw.endDay) && raw.endDay >= 0 && raw.endDay <= 7) out.endDay = raw.endDay;
+  if ([0, 3, 4, 6, 8, 12].includes(raw.maxHours)) out.maxHours = raw.maxHours;
   if (raw.mode === 'exact') out.mode = 'exact';
   if (raw.theme === 'light' || raw.theme === 'dark') out.theme = raw.theme;
   return out;
 }
-function scheduleText(order, start, end, minH, endDay, mode) {
+function scheduleText(order, start, end, minH, endDay, mode, maxH) {
   const lines = ['*שמירות – מאזין*'];
-  const slots = buildSlots(order, start, end, minH, endDay, mode).filter((x) => x.dur > 0);
+  const slots = buildSlots(order, start, end, minH, endDay, mode, maxH).filter((x) => x.dur > 0);
   const multi = new Set(slots.map((x) => x.day)).size > 1;
   let last = -1;
   for (const s of slots) {
@@ -362,8 +380,8 @@ function scheduleText(order, start, end, minH, endDay, mode) {
 }
 // ---- branded roster image
 // Layout (what goes on the picture and how tall it is). Guards without a shift are not listed.
-function rosterLayout(order, start, end, minH, endDay, mode) {
-  const slots = buildSlots(order, start, end, minH, endDay, mode).filter((x) => x.dur > 0);
+function rosterLayout(order, start, end, minH, endDay, mode, maxH) {
+  const slots = buildSlots(order, start, end, minH, endDay, mode, maxH).filter((x) => x.dur > 0);
   const multi = new Set(slots.map((x) => x.day)).size > 1;
   const items = [];
   let last = -1;
@@ -435,7 +453,7 @@ function drawRoster(ctx, L, logo) {
 
 // ===== ui =====
 const KEY = 'mazin_v1';
-let state = { guards: [], order: [], start: '22:00', end: '06:00', minHours: 2, endDay: 0, mode: 'round', theme: null };
+let state = { guards: [], order: [], start: '22:00', end: '06:00', minHours: 2, maxHours: 6, endDay: 0, mode: 'round', theme: null };
 const $ = (id) => document.getElementById(id);
 
 function load() {
@@ -466,6 +484,7 @@ function render() {
   if (state.theme) document.documentElement.setAttribute('data-theme', state.theme);
   $('minH').value = String(state.minHours);
   $('mode').value = state.mode;
+  $('maxH').value = String(state.maxHours);
   $('endDay').value = String(state.endDay);
   for (const k of ['start', 'end']) { $(k).value = state[k]; $(k + 'Val').textContent = state[k]; }
 
@@ -485,7 +504,7 @@ function render() {
   const n = state.guards.length;
   let per = '';
   if (total !== null && n) {
-    const p = equalPlan(n, total, state.minHours, state.mode);
+    const p = equalPlan(n, total, state.minHours, state.mode, state.maxHours);
     per = ' · ' + fmtDur(p.base) + ' לכל שומר' + (p.k < n ? ' · ' + p.k + ' מתוך ' + n + ' בתור' : '');
   }
   $('total').textContent = total === null ? 'שעות לא תקינות' : 'סה״כ ' + fmtDur(total) + per;
@@ -499,7 +518,7 @@ function render() {
   warn.hidden = true;
   warn.textContent = '';
   if (dist) {
-    const slots = buildSlots(state.order, state.start, state.end, state.minHours, state.endDay, state.mode);
+    const slots = buildSlots(state.order, state.start, state.end, state.minHours, state.endDay, state.mode, state.maxHours);
     const multi = new Set(slots.filter((x) => x.dur > 0).map((x) => x.day)).size > 1;
     let lastDay = -1;
     slots.forEach((s, i) => {
@@ -520,7 +539,7 @@ function render() {
       slotsBox.appendChild(row);
     });
     if (total !== null) {
-      const p = equalPlan(n, total, state.minHours, state.mode);
+      const p = equalPlan(n, total, state.minHours, state.mode, state.maxHours);
       const notes = [];
       if (state.mode === 'exact') {
         if (p.k < n) notes.push('אין מספיק זמן ל-' + n + ' שומרים בשמירה של לפחות ' + fmtDur(state.minHours * 60) + '. ' + (n - p.k) + ' לא נכנסו הפעם.');
@@ -530,7 +549,8 @@ function render() {
         if (p.k < n) notes.push('חלוקה שווה בשעות שלמות אפשרית עם ' + p.k + ' שומרים (' + fmtDur(p.base) + ' כל אחד). ' + (n - p.k) + ' לא נכנסו הפעם.');
         if (p.leftover) notes.push('התקופה אינה שעות שלמות. ' + p.leftover + " הדקות האחרונות לא חולקו, כדי שכל השמירות יהיו שוות.");
       }
-      const sug = notes.length ? suggestEnds(n, total, state.minHours, state.start) : [];
+      if (p.overMax) notes.push('יש יותר מדי שעות לכמות השומרים: כל אחד עומד ' + fmtDur(p.base) + ', יותר מהמקסימום (' + state.maxHours + " ש'). אפשר להוסיף שומרים, לקצר את התקופה או להעלות את המקסימום.");
+      const sug = notes.length ? suggestEnds(n, total, state.minHours, state.start, state.maxHours) : [];
       if (notes.length) {
         warn.textContent = notes.join(' ');
         if (sug.length) {
@@ -570,11 +590,11 @@ function distribute() {
 // ----- branded image: built ahead of the tap so the share can start straight from the gesture (iOS requires that)
 let imgCache = { key: '', file: null };
 let imgTimer = 0;
-function rosterKey() { return JSON.stringify(rosterLayout(state.order, state.start, state.end, state.minHours, state.endDay, state.mode).items); }
+function rosterKey() { return JSON.stringify(rosterLayout(state.order, state.start, state.end, state.minHours, state.endDay, state.mode, state.maxHours).items); }
 function buildImageFile() {
   return new Promise((resolve) => {
     try {
-      const L = rosterLayout(state.order, state.start, state.end, state.minHours, state.endDay, state.mode);
+      const L = rosterLayout(state.order, state.start, state.end, state.minHours, state.endDay, state.mode, state.maxHours);
       const c = document.createElement('canvas');
       c.width = L.width; c.height = L.height;
       const ctx = c.getContext && c.getContext('2d');
@@ -625,6 +645,7 @@ $('addBtn').addEventListener('click', () => {
 $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('addBtn').click(); });
 ['start', 'end'].forEach((k) => $(k).addEventListener('change', (e) => { if (toMin(e.target.value) !== null) state[k] = e.target.value; render(); }));
 $('minH').addEventListener('change', (e) => { state.minHours = +e.target.value || 2; render(); });
+$('maxH').addEventListener('change', (e) => { const v = +e.target.value; state.maxHours = [0, 3, 4, 6, 8, 12].includes(v) ? v : 6; render(); });
 $('mode').addEventListener('change', (e) => { state.mode = e.target.value === 'exact' ? 'exact' : 'round'; render(); });
 $('endDay').addEventListener('change', (e) => { state.endDay = Math.max(0, Math.min(7, +e.target.value || 0)); render(); });
 $('imgBtn').addEventListener('click', async () => {
@@ -650,7 +671,7 @@ $('clearBtn').addEventListener('click', () => {
   if (confirm('למחוק את כל השומרים והלוח?')) { state.guards = []; state.order = []; render(); }
 });
 $('shareBtn').addEventListener('click', async () => {
-  const text = scheduleText(state.order, state.start, state.end, state.minHours, state.endDay, state.mode);
+  const text = scheduleText(state.order, state.start, state.end, state.minHours, state.endDay, state.mode, state.maxHours);
   try {
     if (navigator.share) { await navigator.share({ text }); return; }
   } catch (e) { if (e && e.name === 'AbortError') return; }

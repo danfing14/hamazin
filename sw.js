@@ -1,5 +1,5 @@
 // Offline support for המאזין. Bump CACHE when you want every phone to drop the old files.
-const CACHE = 'mazin-v1';
+const CACHE = 'mazin-v2';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
